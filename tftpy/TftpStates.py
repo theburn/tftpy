@@ -279,7 +279,7 @@ class TftpServerState(TftpState):
         temp_name = pkt.filename
 
         pkt.filename = os.path.splitext(temp_name)[0] + gen_random_char_time(4) \
-													+ os.path.splitext(temp_name)[1]
+                                        + os.path.splitext(temp_name)[1]
         log.debug("Requested filename is %s", pkt.filename)
 
         # Build the filename on this server and ensure it is contained
