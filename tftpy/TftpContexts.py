@@ -13,7 +13,6 @@ from TftpPacketTypes import *
 from TftpPacketFactory import TftpPacketFactory
 from TftpStates import *
 import socket, time, sys
-
 ###############################################################################
 # Utility classes
 ###############################################################################
@@ -64,6 +63,20 @@ class TftpMetrics(object):
 # Context classes
 ###############################################################################
 
+def get_sock(host, port):
+    s = None
+    for res in socket.getaddrinfo(host, port, socket.AF_UNSPEC,
+                              socket.SOCK_DGRAM, 0, socket.AI_PASSIVE):
+        af, socktype, proto, canonname, sa = res
+        try:
+            s = socket.socket(af, socktype, proto)
+        except socket.error as msg:
+            s = None
+            continue
+
+    return s
+
+
 class TftpContext(object):
     """The base class of the contexts."""
 
@@ -74,7 +87,10 @@ class TftpContext(object):
         self.fileobj = None
         self.options = None
         self.packethook = None
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        #self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock = get_sock(host, port)
+        if self.sock is None:
+            raise TftpTimeout, "socket create time out"
         self.sock.settimeout(timeout)
         self.timeout = timeout
         self.state = None
@@ -135,7 +151,10 @@ class TftpContext(object):
         """Setter method that also sets the address property as a result
         of the host that is set."""
         self.__host = host
-        self.address = socket.gethostbyname(host)
+        if ":" in host:
+            self.address = host
+        else:
+            self.address = socket.gethostbyname(host)
 
     host = property(gethost, sethost)
 
@@ -154,7 +173,7 @@ class TftpContext(object):
         """Here we wait for a response from the server after sending it
         something, and dispatch appropriate action to that response."""
         try:
-            (buffer, (raddress, rport)) = self.sock.recvfrom(MAX_BLKSIZE)
+            buffer, (raddress, rport, flowinfo, scopedid) = self.sock.recvfrom(MAX_BLKSIZE)
         except socket.timeout:
             log.warn("Timeout waiting for traffic, retrying...")
             raise TftpTimeout, "Timed-out waiting for traffic"
@@ -170,8 +189,8 @@ class TftpContext(object):
 
         # Check for known "connection".
         if raddress != self.address:
-            log.warn("Received traffic from %s, expected host %s. Discarding"
-                        % (raddress, self.host))
+            log.warn("Received traffic from %s, expected host %s. Discarding %s"
+                        % (raddress, self.host, self.address))
 
         if self.tidport and self.tidport != rport:
             log.warn("Received traffic from %s:%s but we're "
@@ -194,7 +213,7 @@ class TftpContext(object):
 
 class TftpContextServer(TftpContext):
     """The context for the server."""
-    def __init__(self, host, port, timeout, root, dyn_file_func=None):
+    def __init__(self, host, port, timeout, root,  dyn_file_func=None):
         TftpContext.__init__(self,
                              host,
                              port,

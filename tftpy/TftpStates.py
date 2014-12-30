@@ -11,10 +11,31 @@ error, in which case a TftpException is returned instead."""
 from TftpShared import *
 from TftpPacketTypes import *
 import os
+import re
+import sys
+
 
 ###############################################################################
 # State classes
 ###############################################################################
+
+SEP = "^_^"
+
+
+def gen_random_char_time(len = 4):
+    import random, string, time, datetime
+    r_char = [random.choice(string.letters) for i in range(len)]
+    s = "".join(r_char) + SEP
+    stime = re.sub(" ", SEP, time.strftime(str(datetime.datetime.now())).split(".")[0])
+    return SEP + s + stime
+
+def gen_time():
+    import time, datetime
+    stime = re.sub(" ", SEP, time.strftime(str(datetime.datetime.now())).split(".")[0])
+    return SEP + stime
+
+
+
 
 class TftpState(object):
     """The base class for the states."""
@@ -111,7 +132,8 @@ class TftpState(object):
         log.debug("In sendACK, passed blocknumber is %s", blocknumber)
         if blocknumber is None:
             blocknumber = self.context.next_block
-        log.info("Sending ack to block %d" % blocknumber)
+        #log.info("Sending ack to block %d" % blocknumber)
+        log.debug("Sending ack to block %d" % blocknumber)
         ackpkt = TftpPacketACK()
         ackpkt.blocknumber = blocknumber
         self.context.sock.sendto(ackpkt.encode().buffer,
@@ -161,7 +183,8 @@ class TftpState(object):
     def handleDat(self, pkt):
         """This method handles a DAT packet during a client download, or a
         server upload."""
-        log.info("Handling DAT packet - block %d" % pkt.blocknumber)
+        #log.info("Handling DAT packet - block %d" % pkt.blocknumber)
+        log.debug("Handling DAT packet - block %d" % pkt.blocknumber)
         log.debug("Expecting block %s", self.context.next_block)
         if pkt.blocknumber == self.context.next_block:
             log.debug("Good, received block %d in sequence", pkt.blocknumber)
@@ -206,6 +229,7 @@ class TftpServerState(TftpState):
         # This variable is used to store the absolute path to the file being
         # managed.
         self.full_path = None
+           
 
     def serverInitial(self, pkt, raddress, rport):
         """This method performs initial setup for a server context transfer,
@@ -247,6 +271,15 @@ class TftpServerState(TftpState):
             # Return same state, we're still waiting for valid traffic.
             return self
 
+        """
+        if "/" in pkt.filename:
+            pkt.filename = re.sub("/", "_", pkt.filename)
+        """
+
+        temp_name = pkt.filename
+
+        pkt.filename = os.path.splitext(temp_name)[0] + gen_random_char_time(4) \
+													+ os.path.splitext(temp_name)[1]
         log.debug("Requested filename is %s", pkt.filename)
 
         # Build the filename on this server and ensure it is contained
@@ -260,13 +293,14 @@ class TftpServerState(TftpState):
         # begin with a '/' strip it off as otherwise os.path.join will
         # treat it as absolute (regardless of whether it is ntpath or
         # posixpath module
+
         if pkt.filename.startswith(self.context.root):
             full_path = pkt.filename
         else:
             full_path = os.path.join(
                 self.context.root, pkt.filename.lstrip('/'))
 
-        # Use abspath to eliminate any remaining relative elements
+                # Use abspath to eliminate any remaining relative elements
         # (e.g. '..') and ensure that is still within the server's
         # root directory
         self.full_path = os.path.abspath(full_path)
@@ -277,6 +311,7 @@ class TftpServerState(TftpState):
             log.warn("requested file is not within the server root - bad")
             self.sendError(TftpErrors.IllegalTftpOp)
             raise TftpException, "bad file path"
+
 
         self.context.file_to_transfer = pkt.filename
 
@@ -412,7 +447,7 @@ class TftpStateExpectACK(TftpState):
     def handle(self, pkt, raddress, rport):
         "Handle a packet, hopefully an ACK since we just sent a DAT."
         if isinstance(pkt, TftpPacketACK):
-            log.info("Received ACK for packet %d" % pkt.blocknumber)
+            log.debug("Received ACK for packet %d" % pkt.blocknumber)
             # Is this an ack to the one we just sent?
             if self.context.next_block == pkt.blocknumber:
                 if self.context.pending_complete:

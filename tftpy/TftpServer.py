@@ -10,6 +10,7 @@ from TftpShared import *
 from TftpPacketTypes import *
 from TftpPacketFactory import TftpPacketFactory
 from TftpContexts import TftpContextServer
+from TftpStates import path_dict
 
 class TftpServer(TftpSession):
     """This class implements a tftp server object. Run the listen() method to
@@ -19,7 +20,7 @@ class TftpServer(TftpSession):
     read from during downloads. This permits the serving of dynamic
     content."""
 
-    def __init__(self, tftproot='/tftpboot', dyn_file_func=None):
+    def __init__(self, tftproot='/var/tftp_root', dyn_file_func=None):
         self.listenip = None
         self.listenport = None
         self.sock = None
@@ -53,6 +54,7 @@ class TftpServer(TftpSession):
                     log.debug("tftproot %s is writable", self.root)
                 else:
                     log.warning("The tftproot %s is not writable" % self.root)
+                    raise TftpException, "The tftproot must be writable"
         else:
             raise TftpException, "The tftproot does not exist."
 
@@ -67,14 +69,37 @@ class TftpServer(TftpSession):
 
         # Don't use new 2.5 ternary operator yet
         # listenip = listenip if listenip else '0.0.0.0'
-        if not listenip: listenip = '0.0.0.0'
+        #if not listenip: listenip = '0.0.0.0'
+        if not listenip: listenip = None
         log.info("Server requested on ip %s, port %s"
                 % (listenip, listenport))
         try:
+            """
             # FIXME - sockets should be non-blocking
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sock.bind((listenip, listenport))
-            _, self.listenport = self.sock.getsockname()
+            """
+
+            for res in socket.getaddrinfo(listenip, listenport, socket.AF_UNSPEC, \
+                                          socket.SOCK_DGRAM, 0, socket.AI_PASSIVE):
+                af, socktype, proto, canonname, sa = res
+                try:
+                    self.sock = socket.socket(af, socktype, proto)
+                except socket.error as msg:
+                    self.sock = None
+                    continue
+                try:
+                    self.sock.bind(sa)
+                except socket.error as msg:
+                    self.sock.close()
+                    self.sock = None
+                    continue
+
+            if self.sock is None:
+                log.info('could not open socket')
+                sys.exit(1)
+
+            _, self.listenport, flowinfo, scopeid = self.sock.getsockname()
+
         except socket.error, err:
             # Reraise it for now.
             raise
@@ -119,7 +144,7 @@ class TftpServer(TftpSession):
                 # Is the traffic on the main server socket? ie. new session?
                 if readysock == self.sock:
                     log.debug("Data ready on our main socket")
-                    buffer, (raddress, rport) = self.sock.recvfrom(MAX_BLKSIZE)
+                    buffer, (raddress, rport, flowinfo, scopeid) = self.sock.recvfrom(MAX_BLKSIZE)
 
                     log.debug("Read %d bytes", len(buffer))
 
@@ -130,6 +155,7 @@ class TftpServer(TftpSession):
                     # Forge a session key based on the client's IP and port,
                     # which should safely work through NAT.
                     key = "%s:%s" % (raddress, rport)
+                    path_dict[str(raddress)] = {"src":None, "dst":None}
 
                     if not self.sessions.has_key(key):
                         log.debug("Creating new server context for "
@@ -139,6 +165,7 @@ class TftpServer(TftpSession):
                                                                timeout,
                                                                self.root,
                                                                self.dyn_file_func)
+                        
                         try:
                             self.sessions[key].start(buffer)
                         except TftpException, err:
@@ -156,12 +183,14 @@ class TftpServer(TftpSession):
                     # Must find the owner of this traffic.
                     for key in self.sessions:
                         if readysock == self.sessions[key].sock:
-                            log.info("Matched input to session key %s"
+                            log.debug("Matched input to session key %s"
                                 % key)
                             try:
                                 self.sessions[key].cycle()
                                 if self.sessions[key].state == None:
                                     log.info("Successful transfer.")
+                                    #TODO after transfer finished
+
                                     deletion_list.append(key)
                             except TftpException, err:
                                 deletion_list.append(key)
@@ -188,6 +217,10 @@ class TftpServer(TftpSession):
                         log.debug("hit max retries on %s, giving up",
                             self.sessions[key])
                         deletion_list.append(key)
+                        #del non-complete file
+                        key_raddress = ":".join(key.split(":")[:-1])
+                        src = path_dict[str(key_raddress)]["src"]
+                        os.remove(src) 
                     else:
                         log.debug("resending on session %s", self.sessions[key])
                         self.sessions[key].state.resendLast()
